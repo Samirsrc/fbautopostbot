@@ -1,13 +1,9 @@
 import os
-from flask import Flask, request
-import threading
-import asyncio
-import requests
 import re
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import requests
+from flask import Flask, request
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 
-# Utilisez les variables d'environnement pour vos tokens/secrets !
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0"))
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
@@ -16,31 +12,26 @@ PAGE_ID = os.environ.get("PAGE_ID")
 app = Flask(__name__)
 user_buffers = {}
 validation_buffers = {}
+bot = Bot(TELEGRAM_TOKEN)
 
+# Utilitaires Messenger
 def send_message_to_messenger(recipient_id, message):
-    print(f"DEBUG send_message_to_messenger: {recipient_id} -> {message}")
     url = "https://graph.facebook.com/v17.0/me/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
-    data = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message}
-    }
+    data = {"recipient": {"id": recipient_id}, "message": {"text": message}}
     try:
         r = requests.post(url, params=params, json=data, timeout=5)
-        print("DEBUG Messenger API response:", r.status_code, r.text)
     except Exception as e:
-        print("Erreur lors de l'envoi Messenger:", e)
+        print("Erreur Messenger:", e)
 
 def chunk_list(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
 def is_date_valid(date_str):
-    # Validation pour format سنة/شهر/يوم (exemple: 15/10/2025)
     return bool(re.match(r"^(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/[0-9]{4}$", date_str))
 
 def convert_date_to_ar_format(date_str):
-    # Transforme jj/mm/aaaa -> aaaa/mm/jj pour l'affichage arabe
     m = re.match(r"^(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/[0-9]{4}$", date_str)
     if not m:
         return date_str
@@ -83,14 +74,12 @@ def publish_on_facebook(message, image_urls=None):
         resp = requests.post(
             post_url,
             params={"access_token": PAGE_ACCESS_TOKEN},
-            json={
-                "message": message,
-                "attached_media": attached_media
-            }
+            json={"message": message, "attached_media": attached_media}
         )
         return resp.json()
 
-async def telegram_post_message_for_validation(bot, photo_urls, lieu, date, sender_name, sender_id):
+# Telegram : envoi pour validation
+def telegram_post_message_for_validation(photo_urls, lieu, date, sender_name, sender_id):
     message = (
         f"Nouvelle demande de publication :\n"
         f"Nom de l'expéditeur : {sender_name}\n"
@@ -108,10 +97,10 @@ async def telegram_post_message_for_validation(bot, photo_urls, lieu, date, send
     reply_markup = InlineKeyboardMarkup(buttons)
     msg_ids = []
     if not photo_urls:
-        msg = await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, reply_markup=reply_markup)
+        msg = bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, reply_markup=reply_markup)
         msg_ids.append(msg.message_id)
     elif len(photo_urls) == 1:
-        msg = await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo_urls[0], caption=message, reply_markup=reply_markup)
+        msg = bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=photo_urls[0], caption=message, reply_markup=reply_markup)
         msg_ids.append(msg.message_id)
     else:
         for i, chunk in enumerate(chunk_list(photo_urls, 10)):
@@ -121,15 +110,10 @@ async def telegram_post_message_for_validation(bot, photo_urls, lieu, date, send
                     medias.append(InputMediaPhoto(media=url, caption=message))
                 else:
                     medias.append(InputMediaPhoto(media=url))
-            msgs = await bot.send_media_group(chat_id=TELEGRAM_CHAT_ID, media=medias)
+            msgs = bot.send_media_group(chat_id=TELEGRAM_CHAT_ID, media=medias)
             msg_ids.extend([m.message_id for m in msgs])
-        confirm_msg = await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="Veuillez valider ou modifier la publication ci-dessus.", reply_markup=reply_markup)
+        confirm_msg = bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="Veuillez valider ou modifier la publication ci-dessus.", reply_markup=reply_markup)
         msg_ids.append(confirm_msg.message_id)
-    return msg_ids
-
-async def async_send_to_telegram(photo_urls, lieu, date, sender_name, sender_id):
-    bot = Bot(TELEGRAM_TOKEN)
-    msg_ids = await telegram_post_message_for_validation(bot, photo_urls, lieu, date, sender_name, sender_id)
     for msg_id in msg_ids:
         validation_buffers[msg_id] = {
             "photos": photo_urls.copy(),
@@ -139,66 +123,65 @@ async def async_send_to_telegram(photo_urls, lieu, date, sender_name, sender_id)
             "sender_id": sender_id,
             "state": "awaiting",
         }
+    return msg_ids
 
-def send_to_telegram_for_validation(photo_urls, lieu, date, sender_name, sender_id):
-    try:
-        asyncio.get_running_loop()
-        asyncio.create_task(
-            async_send_to_telegram(photo_urls, lieu, date, sender_name, sender_id)
-        )
-    except RuntimeError:
-        asyncio.run(
-            async_send_to_telegram(photo_urls, lieu, date, sender_name, sender_id)
-        )
+# Telegram webhook handler
+@app.route("/telegram-webhook", methods=["POST"])
+def telegram_webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    if update.message and update.message.text:
+        if update.message.text.startswith("/start"):
+            update.message.reply_text("Bot de validation prêt !")
+        elif update.message.reply_to_message:
+            return edit_handler(update)
+    elif update.callback_query:
+        return validation_callback(update)
+    return "OK"
 
-async def start(update, context):
-    await update.message.reply_text("Bot de validation prêt !")
-
-async def validation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def validation_callback(update):
     query = update.callback_query
     message_id = query.message.message_id if hasattr(query, "message") else None
     buf = validation_buffers.get(message_id)
     if not buf:
-        await query.answer("Impossible de retrouver les infos du post.")
-        return
+        query.answer("Impossible de retrouver les infos du post.")
+        return "OK"
 
     if buf.get("state") == "done":
-        await query.answer("Déjà traité.")
-        return
+        query.answer("Déjà traité.")
+        return "OK"
 
     if query.data == "edit_lieu":
         buf["state"] = "editing_lieu"
-        await query.message.reply_text("Envoie le nouveau lieu en réponse à ce message.")
-        await query.answer()
+        query.message.reply_text("Envoie le nouveau lieu en réponse à ce message.")
+        query.answer()
     elif query.data == "edit_date":
         buf["state"] = "editing_date"
-        await query.message.reply_text("أرسل التاريخ بالصيغة: سنة/شهر/يوم (مثال: 15/10/2025) بالرد على هذه الرسالة.")
-        await query.answer()
+        query.message.reply_text("أرسل التاريخ بالصيغة: سنة/شهر/يوم (مثال: 15/10/2025) بالرد على هذه الرسالة.")
+        query.answer()
     elif query.data == "delete_photo":
         if not buf["photos"]:
-            await query.answer("Aucune photo à supprimer.")
-            return
+            query.answer("Aucune photo à supprimer.")
+            return "OK"
         buttons = []
         for i, url in enumerate(buf["photos"]):
             buttons.append([InlineKeyboardButton(f"Supprimer photo {i+1}", callback_data=f"delete_photo_{i}")])
         buttons.append([InlineKeyboardButton("Annuler", callback_data="cancel_delete_photo")])
         markup = InlineKeyboardMarkup(buttons)
-        await query.message.reply_text("Clique sur la photo à supprimer :", reply_markup=markup)
-        await query.answer()
+        query.message.reply_text("Clique sur la photo à supprimer :", reply_markup=markup)
+        query.answer()
     elif query.data.startswith("delete_photo_"):
         idx = int(query.data.split("_")[-1])
         if 0 <= idx < len(buf["photos"]):
             del buf["photos"][idx]
-            await query.message.reply_text("Photo supprimée.")
+            query.message.reply_text("Photo supprimée.")
         else:
-            await query.message.reply_text("Indice invalide.")
-        bot = Bot(TELEGRAM_TOKEN)
-        await telegram_post_message_for_validation(bot, buf["photos"], buf["lieu"], buf["date"], buf["sender_name"], buf["sender_id"])
+            query.message.reply_text("Indice invalide.")
+        telegram_post_message_for_validation(buf["photos"], buf["lieu"], buf["date"], buf["sender_name"], buf["sender_id"])
         buf["state"] = "awaiting"
-        await query.answer()
+        query.answer()
     elif query.data == "cancel_delete_photo":
         buf["state"] = "awaiting"
-        await query.answer("Suppression annulée.")
+        query.answer("Suppression annulée.")
     elif query.data == "valider":
         buf["state"] = "done"
         texte = (
@@ -213,77 +196,66 @@ async def validation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             image_urls=buf["photos"]
         )
         if getattr(query.message, "photo", None):
-            await query.edit_message_caption(
+            query.edit_message_caption(
                 caption="✅ Publication validée et publiée sur Facebook !"
             )
         else:
-            await query.edit_message_text(
+            query.edit_message_text(
                 text="✅ Publication validée et publiée sur Facebook !"
             )
-        print("Publication Facebook :", fb_result)
         validation_buffers.pop(message_id, None)
     elif query.data == "refuser":
         buf["state"] = "done"
         if getattr(query.message, "photo", None):
-            await query.edit_message_caption(
+            query.edit_message_caption(
                 caption="❌ Publication refusée."
             )
         else:
-            await query.edit_message_text(
+            query.edit_message_text(
                 text="❌ Publication refusée."
             )
         validation_buffers.pop(message_id, None)
     else:
-        await query.answer("Action non reconnue.")
+        query.answer("Action non reconnue.")
+    return "OK"
 
-async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def edit_handler(update):
     reply_to = update.message.reply_to_message
     if not reply_to:
-        await update.message.reply_text("Merci de répondre au message de demande de modification.")
-        return
+        update.message.reply_text("Merci de répondre au message de demande de modification.")
+        return "OK"
 
     msg_id = reply_to.message_id
     buf = validation_buffers.get(msg_id)
 
     if not buf:
-        # Recherche d'un buffer en mode édition (sécurité)
         for b in validation_buffers.values():
             if b.get("state") in ["editing_lieu", "editing_date"]:
                 buf = b
                 break
         if not buf:
-            await update.message.reply_text("Impossible de trouver la publication à éditer.")
-            return
+            update.message.reply_text("Impossible de trouver la publication à éditer.")
+            return "OK"
 
     if buf.get("state") == "editing_lieu":
         buf["lieu"] = update.message.text.strip()
         buf["state"] = "awaiting"
-        await update.message.reply_text("Lieu modifié.")
-        bot = Bot(TELEGRAM_TOKEN)
-        await telegram_post_message_for_validation(bot, buf["photos"], buf["lieu"], buf["date"], buf["sender_name"], buf["sender_id"])
+        update.message.reply_text("Lieu modifié.")
+        telegram_post_message_for_validation(buf["photos"], buf["lieu"], buf["date"], buf["sender_name"], buf["sender_id"])
     elif buf.get("state") == "editing_date":
         date_text = update.message.text.strip()
         if is_date_valid(date_text):
             buf["date"] = date_text
             buf["state"] = "awaiting"
-            await update.message.reply_text("Date modifiée.")
-            bot = Bot(TELEGRAM_TOKEN)
-            await telegram_post_message_for_validation(bot, buf["photos"], buf["lieu"], buf["date"], buf["sender_name"], buf["sender_id"])
+            update.message.reply_text("Date modifiée.")
+            telegram_post_message_for_validation(buf["photos"], buf["lieu"], buf["date"], buf["sender_name"], buf["sender_id"])
         else:
-            await update.message.reply_text("صيغة التاريخ غير صحيحة. يرجى إرسال التاريخ بالصيغة: سنة/شهر/يوم (مثال: 15/10/2025).")
+            update.message.reply_text("صيغة التاريخ غير صحيحة. يرجى إرسال التاريخ بالصيغة: سنة/شهر/يوم (مثال: 15/10/2025).")
     else:
-        await update.message.reply_text("Aucune modification en cours.")
+        update.message.reply_text("Aucune modification en cours.")
+    return "OK"
 
-def run_telegram_bot():
-    app_telegram = Application.builder().token(TELEGRAM_TOKEN).build()
-    app_telegram.add_handler(CommandHandler('start', start))
-    app_telegram.add_handler(CallbackQueryHandler(validation_callback))
-    app_telegram.add_handler(MessageHandler(filters.TEXT & filters.REPLY, edit_handler))
-    app_telegram.run_polling()
-
-threading.Thread(target=run_telegram_bot, daemon=True).start()
-
-# ----------------------------- TRADUCTIONS EN ARABE pour Messenger -------------------------------
+# Messenger webhook handler (exemple minimal)
 AR_MSGS = {
     "welcome": "مرحبًا، يرجى اتباع الخطوات لإرسال المنشور.",
     "ask_lieu": "من فضلك أرسل اسم المكان باللغة العربية (مثال: محور دوران دار البيضاء).",
@@ -296,7 +268,7 @@ AR_MSGS = {
     "finish_ok": "تم إرسال المنشور، وسيتم نشره قريبًا.",
 }
 
-@app.post("/webhook")
+@app.route("/webhook", methods=["POST"])
 def receive():
     data = request.get_json() or {}
     for entry in data.get("entry", []):
@@ -323,14 +295,9 @@ def receive():
                     buffer["processed_mids"] = set(list(buffer["processed_mids"])[-15:])
 
             if buffer["step"] == 0:
-                print("DEBUG step 0:", message)
                 if "text" in message and message.get("text", "").strip().lower().startswith("samir"):
-                    print("DEBUG samir detected, sending welcome!")
                     buffer["step"] = 1
-                    send_message_to_messenger(
-                        sender_id,
-                        AR_MSGS["welcome"]
-                    )
+                    send_message_to_messenger(sender_id, AR_MSGS["welcome"])
                 return {"ok": True}
 
             if buffer["step"] == 1:
@@ -341,16 +308,10 @@ def receive():
                     buffer["step"] = 2
                     buffer["error_sent_2"] = False
                     buffer["consigne_sent_2"] = False
-                    send_message_to_messenger(
-                        sender_id,
-                        AR_MSGS["lieu_ok"]
-                    )
+                    send_message_to_messenger(sender_id, AR_MSGS["lieu_ok"])
                 elif not buffer.get("consigne_sent_1", False):
                     buffer["consigne_sent_1"] = True
-                    send_message_to_messenger(
-                        sender_id,
-                        AR_MSGS["ask_lieu"]
-                    )
+                    send_message_to_messenger(sender_id, AR_MSGS["ask_lieu"])
                 return {"ok": True}
 
             if buffer["step"] == 2:
@@ -364,23 +325,14 @@ def receive():
                         buffer["error_sent_3"] = False
                         buffer["error_sent_2"] = False
                         buffer["consigne_sent_2"] = False
-                        send_message_to_messenger(
-                            sender_id,
-                            AR_MSGS["date_ok"]
-                        )
+                        send_message_to_messenger(sender_id, AR_MSGS["date_ok"])
                     else:
                         if not buffer.get("error_sent_2", False):
                             buffer["error_sent_2"] = True
-                            send_message_to_messenger(
-                                sender_id,
-                                AR_MSGS["date_invalid"]
-                            )
+                            send_message_to_messenger(sender_id, AR_MSGS["date_invalid"])
                 elif not buffer.get("consigne_sent_2", False):
                     buffer["consigne_sent_2"] = True
-                    send_message_to_messenger(
-                        sender_id,
-                        AR_MSGS["ask_date"]
-                    )
+                    send_message_to_messenger(sender_id, AR_MSGS["ask_date"])
                 return {"ok": True}
 
             if buffer["step"] == 3 and not buffer.get("finished", False):
@@ -394,7 +346,7 @@ def receive():
                     buffer["finished"] = True
                     sender_name = get_user_name(sender_id)
                     send_message_to_messenger(sender_id, AR_MSGS["finish_ok"])
-                    send_to_telegram_for_validation(
+                    telegram_post_message_for_validation(
                         photo_urls=buffer["photos"],
                         lieu=buffer["lieu"],
                         date=buffer["date"],
@@ -410,13 +362,16 @@ def receive():
                 elif not images:
                     if not buffer.get("error_sent_3", False):
                         buffer["error_sent_3"] = True
-                        send_message_to_messenger(
-                            sender_id,
-                            AR_MSGS["ask_photo"]
-                        )
+                        send_message_to_messenger(sender_id, AR_MSGS["ask_photo"])
                 return {"ok": True}
-
     return {"ok": True}
+
+# Configure automatiquement le webhook Telegram au premier appel Flask
+@app.before_first_request
+def init_webhook():
+    webhook_url = os.environ.get("WEBHOOK_URL") or f"https://{os.environ.get('WEBSITE_HOSTNAME')}/telegram-webhook"
+    bot.set_webhook(url=webhook_url)
+    print("Webhook Telegram configuré sur :", webhook_url)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
