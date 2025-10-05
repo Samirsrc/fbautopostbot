@@ -25,9 +25,6 @@ if TELEGRAM_TOKEN and webhook_url and webhook_url != "https://None/telegram-webh
 else:
     print("TELEGRAM_TOKEN ou WEBSITE_HOSTNAME/WEBHOOK_URL manquant : webhook Telegram NON configuré")
 
-# Fonctions utilitaires (Messenger, Facebook, Telegram) ici...
-# (copie-colle ici toutes tes fonctions utilitaires : send_message_to_messenger, chunk_list, etc.)
-
 def send_message_to_messenger(recipient_id, message):
     url = "https://graph.facebook.com/v17.0/me/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
@@ -136,8 +133,6 @@ def telegram_post_message_for_validation(photo_urls, lieu, date, sender_name, se
             "state": "awaiting",
         }
     return msg_ids
-
-# Routes Flask pour Telegram et Messenger
 
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
@@ -268,7 +263,7 @@ def edit_handler(update):
         update.message.reply_text("Aucune modification en cours.")
     return "OK"
 
-# Messenger webhook handler (exemple minimal)
+# -- MESSENGER WEBHOOK HANDLER AVEC VERIF FACEBOOK --
 AR_MSGS = {
     "welcome": "مرحبًا، يرجى اتباع الخطوات لإرسال المنشور.",
     "ask_lieu": "من فضلك أرسل اسم المكان باللغة العربية (مثال: محور دوران دار البيضاء).",
@@ -281,8 +276,17 @@ AR_MSGS = {
     "finish_ok": "تم إرسال المنشور، وسيتم نشره قريبًا.",
 }
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def receive():
+    if request.method == "GET":
+        mode = request.args.get("hub.mode")
+        challenge = request.args.get("hub.challenge")
+        verify_token = request.args.get("hub.verify_token")
+        # --- METS TON VÉRIFY TOKEN PERSO ICI ---
+        if mode == "subscribe" and verify_token == "123456789":
+            return challenge, 200
+        return "Verification token mismatch", 403
+
     data = request.get_json() or {}
     for entry in data.get("entry", []):
         for event in entry.get("messaging", []):
