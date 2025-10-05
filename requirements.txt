@@ -1,4 +1,4 @@
 flask
 requests
-python-telegram-bot==22.5
+python-telegram-bot==13.15
 # Ajoute ici tout ce que tu utilises dans ton projet (autres librairies, etc.)
