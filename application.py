@@ -13,6 +13,9 @@ TELEGRAM_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0"))
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 PAGE_ID = os.environ.get("PAGE_ID")
 
+# Ajout pour la vérification du webhook Facebook
+VERIFY_TOKEN = "123456789"
+
 app = Flask(__name__)
 user_buffers = {}
 validation_buffers = {}
@@ -296,8 +299,17 @@ AR_MSGS = {
     "finish_ok": "تم إرسال المنشور، وسيتم نشره قريبًا.",
 }
 
-@app.post("/webhook")
-def receive():
+@app.route("/webhook", methods=["GET", "POST"])
+def webhook():
+    # Vérification Facebook (GET)
+    if request.method == "GET":
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if token == VERIFY_TOKEN:
+            return challenge
+        return "Invalid verification token", 403
+
+    # POST : Messenger events (on reprend le code de receive)
     data = request.get_json() or {}
     for entry in data.get("entry", []):
         for event in entry.get("messaging", []):
