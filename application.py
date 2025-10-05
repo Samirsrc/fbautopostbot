@@ -14,7 +14,7 @@ user_buffers = {}
 validation_buffers = {}
 bot = Bot(TELEGRAM_TOKEN)
 
-# Initialisation du webhook Telegram au démarrage du conteneur/app
+# Configuration du webhook Telegram à chaque démarrage
 webhook_url = os.environ.get("WEBHOOK_URL") or f"https://{os.environ.get('WEBSITE_HOSTNAME')}/telegram-webhook"
 if TELEGRAM_TOKEN and webhook_url and webhook_url != "https://None/telegram-webhook":
     try:
@@ -23,9 +23,11 @@ if TELEGRAM_TOKEN and webhook_url and webhook_url != "https://None/telegram-webh
     except Exception as e:
         print("Erreur configuration webhook Telegram :", e)
 else:
-    print("TELEGRAM_TOKEN ou WEBSITE_HOSTNAME/WEBHOOK_URL manquant : webhook Telegram NON configuré")
+    print("TELEGRAM_TOKEN ou WEBSITE_HOSTNAME/WEBHOOK_URL manquant : webhook Telegram NON configuré")
 
-# Utilitaires Messenger
+# Fonctions utilitaires (Messenger, Facebook, Telegram) ici...
+# (copie-colle ici toutes tes fonctions utilitaires : send_message_to_messenger, chunk_list, etc.)
+
 def send_message_to_messenger(recipient_id, message):
     url = "https://graph.facebook.com/v17.0/me/messages"
     params = {"access_token": PAGE_ACCESS_TOKEN}
@@ -89,7 +91,6 @@ def publish_on_facebook(message, image_urls=None):
         )
         return resp.json()
 
-# Telegram : envoi pour validation
 def telegram_post_message_for_validation(photo_urls, lieu, date, sender_name, sender_id):
     message = (
         f"Nouvelle demande de publication :\n"
@@ -136,7 +137,8 @@ def telegram_post_message_for_validation(photo_urls, lieu, date, sender_name, se
         }
     return msg_ids
 
-# Telegram webhook handler
+# Routes Flask pour Telegram et Messenger
+
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     update = Update.de_json(request.get_json(force=True), bot)
@@ -306,4 +308,77 @@ def receive():
                     buffer["processed_mids"] = set(list(buffer["processed_mids"])[-15:])
 
             if buffer["step"] == 0:
-                if "text" in message and message.get("text", "").
+                if "text" in message and message.get("text", "").strip().lower().startswith("samir"):
+                    buffer["step"] = 1
+                    send_message_to_messenger(sender_id, AR_MSGS["welcome"])
+                return {"ok": True}
+
+            if buffer["step"] == 1:
+                if buffer["lieu"] is not None:
+                    return {"ok": True}
+                if "text" in message:
+                    buffer["lieu"] = message["text"].strip()
+                    buffer["step"] = 2
+                    buffer["error_sent_2"] = False
+                    buffer["consigne_sent_2"] = False
+                    send_message_to_messenger(sender_id, AR_MSGS["lieu_ok"])
+                elif not buffer.get("consigne_sent_1", False):
+                    buffer["consigne_sent_1"] = True
+                    send_message_to_messenger(sender_id, AR_MSGS["ask_lieu"])
+                return {"ok": True}
+
+            if buffer["step"] == 2:
+                if buffer["date"] is not None:
+                    return {"ok": True}
+                if "text" in message:
+                    date_str = message["text"].strip()
+                    if is_date_valid(date_str):
+                        buffer["date"] = date_str
+                        buffer["step"] = 3
+                        buffer["error_sent_3"] = False
+                        buffer["error_sent_2"] = False
+                        buffer["consigne_sent_2"] = False
+                        send_message_to_messenger(sender_id, AR_MSGS["date_ok"])
+                    else:
+                        if not buffer.get("error_sent_2", False):
+                            buffer["error_sent_2"] = True
+                            send_message_to_messenger(sender_id, AR_MSGS["date_invalid"])
+                elif not buffer.get("consigne_sent_2", False):
+                    buffer["consigne_sent_2"] = True
+                    send_message_to_messenger(sender_id, AR_MSGS["ask_date"])
+                return {"ok": True}
+
+            if buffer["step"] == 3 and not buffer.get("finished", False):
+                attachments = message.get("attachments", [])
+                images = [a["payload"]["url"] for a in attachments if a.get("type") == "image"]
+                if images:
+                    buffer["photos"].extend(images)
+                    buffer["error_sent_3"] = False
+                    send_message_to_messenger(sender_id, AR_MSGS["photo_ok"])
+                elif "text" in message and message.get("text", "").strip().lower() == "fin":
+                    buffer["finished"] = True
+                    sender_name = get_user_name(sender_id)
+                    send_message_to_messenger(sender_id, AR_MSGS["finish_ok"])
+                    telegram_post_message_for_validation(
+                        photo_urls=buffer["photos"],
+                        lieu=buffer["lieu"],
+                        date=buffer["date"],
+                        sender_name=sender_name,
+                        sender_id=sender_id
+                    )
+                    user_buffers[sender_id] = {
+                        "step": 0, "lieu": None, "date": None, "photos": [],
+                        "finished": False, "error_sent_1": False, "error_sent_2": False, "error_sent_3": False,
+                        "consigne_sent_1": False, "consigne_sent_2": False,
+                        "processed_mids": set()
+                    }
+                elif not images:
+                    if not buffer.get("error_sent_3", False):
+                        buffer["error_sent_3"] = True
+                        send_message_to_messenger(sender_id, AR_MSGS["ask_photo"])
+                return {"ok": True}
+    return {"ok": True}
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
