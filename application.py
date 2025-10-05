@@ -263,7 +263,6 @@ def edit_handler(update):
         update.message.reply_text("Aucune modification en cours.")
     return "OK"
 
-# -- MESSENGER WEBHOOK HANDLER AVEC VERIF FACEBOOK --
 AR_MSGS = {
     "welcome": "مرحبًا، يرجى اتباع الخطوات لإرسال المنشور.",
     "ask_lieu": "من فضلك أرسل اسم المكان باللغة العربية (مثال: محور دوران دار البيضاء).",
