@@ -7,14 +7,11 @@ import re
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Utilisez les variables d'environnement pour vos tokens/secrets
+# Utilisez les variables d'environnement pour vos tokens/secrets !
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = int(os.environ.get("TELEGRAM_CHAT_ID", "0"))
 PAGE_ACCESS_TOKEN = os.environ.get("PAGE_ACCESS_TOKEN")
 PAGE_ID = os.environ.get("PAGE_ID")
-
-# Ajout pour la vérification du webhook Facebook
-VERIFY_TOKEN = "123456789"
 
 app = Flask(__name__)
 user_buffers = {}
@@ -299,17 +296,8 @@ AR_MSGS = {
     "finish_ok": "تم إرسال المنشور، وسيتم نشره قريبًا.",
 }
 
-@app.route("/webhook", methods=["GET", "POST"])
-def webhook():
-    # Vérification Facebook (GET)
-    if request.method == "GET":
-        token = request.args.get("hub.verify_token")
-        challenge = request.args.get("hub.challenge")
-        if token == VERIFY_TOKEN:
-            return challenge
-        return "Invalid verification token", 403
-
-    # POST : Messenger events (on reprend le code de receive)
+@app.post("/webhook")
+def receive():
     data = request.get_json() or {}
     for entry in data.get("entry", []):
         for event in entry.get("messaging", []):
